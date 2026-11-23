@@ -1,0 +1,120 @@
+@import "tailwindcss";
+
+@theme inline {
+  --font-pixel: var(--font-press-start), monospace;
+  --font-mono-tech: var(--font-chivo-mono), monospace;
+  --font-vt: var(--font-vt323), monospace;
+  --font-inter: var(--font-inter), sans-serif;
+}
+
+:root {
+  --arcade-panel: rgba(45, 31, 88, 0.86);
+  --arcade-deep: #150d30;
+  --arcade-slot: #1e1442;
+  --arcade-cyan: #00f0ff;
+  --arcade-pink: #ff2a85;
+  --arcade-yellow: #ffe600;
+  --arcade-green: #00f29b;
+}
+
+body {
+  font-family: var(--font-chivo-mono), monospace;
+  overflow-x: hidden;
+}
+
+.font-pixel {
+  font-family: var(--font-press-start), monospace;
+}
+
+.font-mono-tech {
+  font-family: var(--font-chivo-mono), monospace;
+}
+
+.font-vt {
+  font-family: var(--font-vt323), monospace;
+}
+
+.font-inter {
+  font-family: var(--font-inter), sans-serif;
+}
+
+/* Fundo principal replicando o gradiente suave Mash 33 do Figma (sem granulação) */
+.ru-mesh-bg {
+  background-color: #6c63ff;
+  background-image: url("/assets/bg-mesh.png");
+  background-size: cover;
+  background-position: center top;
+  background-attachment: fixed;
+}
+
+/* Sombra estilo console/arcade dos cards do Figma */
+.arcade-card-shadow {
+  box-shadow: 0 0 0 2px #0c071e, 0 8px 20px 0 rgba(0, 0, 0, 0.5);
+}
+
+.arcade-arena-shadow {
+  box-shadow: 0 0 0 3px #0c071e, 0 14px 34px 0 rgba(0, 0, 0, 0.5);
+}
+
+.arcade-btn-inset {
+  box-shadow: inset 0 2px 0 0 rgba(255, 255, 255, 0.4);
+}
+
+.arcade-start-btn-inset {
+  box-shadow:
+    inset -4px -4px 0 0 rgba(0, 0, 0, 0.35),
+    inset 4px 4px 0 0 rgba(255, 255, 255, 0.45);
+}
+
+/* Scrollbar estilizada para a barra de parâmetros e fila de sprites */
+.arcade-scroll::-webkit-scrollbar {
+  height: 7px;
+  width: 7px;
+}
+
+.arcade-scroll::-webkit-scrollbar-track {
+  background: rgba(21, 13, 48, 0.7);
+  border-radius: 9999px;
+}
+
+.arcade-scroll::-webkit-scrollbar-thumb {
+  background: rgba(0, 240, 255, 0.45);
+  border-radius: 9999px;
+}
+
+.arcade-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 240, 255, 0.8);
+}
+
+@keyframes pulse-alert {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(255, 51, 102, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(255, 51, 102, 0);
+  }
+}
+
+.animate-pulse-alert {
+  animation: pulse-alert 1.4s ease-in-out infinite;
+}
+
+@keyframes ghost-float {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+.animate-ghost-float {
+  animation: ghost-float 2.6s ease-in-out infinite;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-ghost-float {
+    animation: none;
+  }
+}
