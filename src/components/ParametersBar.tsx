@@ -8,6 +8,7 @@ interface ParametersBarProps {
   activeTurnstileCount: number;
   currentLambda: number;
   buffetCurrentCount: number;
+  systemNCount: number;
   externalQueueCount: number;
   timeSec: number;
   onUpdateConfig: (partial: Partial<SimConfig>) => void;
@@ -21,7 +22,6 @@ type EditorKey =
   | "lambda"
   | "buffetTime"
   | "turnstileTime"
-  | "buffetCapacity"
   | "initialQueue"
   | "buffetQueue";
 
@@ -30,6 +30,7 @@ export function ParametersBar({
   activeTurnstileCount,
   currentLambda,
   buffetCurrentCount,
+  systemNCount,
   externalQueueCount,
   timeSec,
   onUpdateConfig,
@@ -92,7 +93,7 @@ export function ParametersBar({
     const val = Math.round(parseFloat(draftValue));
     if (Number.isFinite(val) && val >= 0) {
       if (timeSec === 0) {
-        onUpdateConfig({ initialBuffet: Math.min(val, config.buffetCapacity) });
+        onUpdateConfig({ initialBuffet: val });
       } else if (val > 0) {
         onAddBuffetStudents(val);
       }
@@ -108,7 +109,6 @@ export function ParametersBar({
           <h2 className="font-pixel text-[12px] tracking-[0.3px] text-[#00f0ff]">
             PARÂMETROS
           </h2>
-          {/* Ajuste obrigatório #1: Badge dinâmico M/M/1 .. M/M/5 */}
           <span
             data-testid="mm-badge"
             className="font-mono-tech rounded-[4px] border border-[#3b2579] bg-[#1e1442] px-2.5 py-0.5 text-[11px] font-semibold text-[#94a3b8]"
@@ -125,7 +125,7 @@ export function ParametersBar({
         </div>
       </div>
 
-      {/* Faixa horizontal dos 7 cards de parâmetros */}
+      {/* Faixa horizontal dos cards de parâmetros (sem Capacidade K do buffet) */}
       <div className="arcade-scroll flex gap-3.5 overflow-x-auto pb-2">
         {/* 1. Lambda: Taxa de Chegada */}
         <div className="flex min-w-[335px] shrink-0 flex-col justify-between gap-3 rounded-[4px] border border-[rgba(59,37,121,0.6)] bg-[#1e1442] p-3">
@@ -208,9 +208,9 @@ export function ParametersBar({
                   toggleEditor(
                     "lambda",
                     config.arrivalMode === "peak_wave"
-                      ? String(config.calmLambda)
-                      : String(config.lambda),
-                    String(config.peakLambda)
+                      ? config.calmLambda.toFixed(2)
+                      : config.lambda.toFixed(4),
+                    config.peakLambda.toFixed(2)
                   )
                 }
                 className="font-pixel cursor-pointer rounded-[4px] border border-[rgba(255,42,133,0.6)] bg-[rgba(255,42,133,0.3)] px-2.5 py-1.5 text-[9px] text-[#fbcfe8] transition-colors hover:bg-[rgba(255,42,133,0.5)]"
@@ -275,7 +275,60 @@ export function ParametersBar({
           </div>
         </div>
 
-        {/* 3. Tempo no Buffet */}
+        {/* 3. Tempo na catraca */}
+        <div className="flex min-w-[245px] shrink-0 flex-col justify-between gap-2.5 rounded-[4px] border border-[rgba(59,37,121,0.6)] bg-[#1e1442] p-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-mono-tech text-[12px] font-semibold text-[#cbd5e1]">
+              Tempo na catraca
+            </span>
+            <span className="font-pixel text-[10px] text-[#d8b4fe]">
+              {config.turnstileServiceTimeSec.toFixed(2)} seg
+            </span>
+          </div>
+
+          {openEditor === "turnstileTime" ? (
+            <div className="flex items-center gap-1.5">
+              <input
+                type="number"
+                step="0.01"
+                min="2"
+                max="180"
+                value={draftValue}
+                onChange={(e) => setDraftValue(e.target.value)}
+                onKeyDown={(e) =>
+                  e.key === "Enter" &&
+                  applyNumberConfig("turnstileServiceTimeSec", 2, 180)
+                }
+                className="w-20 rounded border border-[#d8b4fe]/60 bg-[#150d30] px-2 py-1 text-[11px] text-white outline-none"
+              />
+              <span className="text-[10px] text-slate-400">seg</span>
+              <button
+                type="button"
+                onClick={() =>
+                  applyNumberConfig("turnstileServiceTimeSec", 2, 180)
+                }
+                className="font-pixel cursor-pointer rounded bg-[#10b981] px-2 py-1 text-[8px] text-[#020617]"
+              >
+                OK
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() =>
+                toggleEditor(
+                  "turnstileTime",
+                  config.turnstileServiceTimeSec.toFixed(2)
+                )
+              }
+              className="font-pixel w-fit cursor-pointer rounded-[4px] border border-[rgba(255,42,133,0.6)] bg-[rgba(255,42,133,0.3)] px-2.5 py-1.5 text-[9px] text-[#fbcfe8] transition-colors hover:bg-[rgba(255,42,133,0.5)]"
+            >
+              Alterar tempo
+            </button>
+          )}
+        </div>
+
+        {/* 4. Tempo no Buffet (apenas animação visual) */}
         <div className="flex min-w-[235px] shrink-0 flex-col justify-between gap-2.5 rounded-[4px] border border-[rgba(59,37,121,0.6)] bg-[#1e1442] p-3">
           <div className="flex items-center justify-between gap-2">
             <span className="font-mono-tech text-[12px] font-semibold text-[#cbd5e1]">
@@ -324,113 +377,17 @@ export function ParametersBar({
           )}
         </div>
 
-        {/* 4. Tempo na catraca */}
-        <div className="flex min-w-[235px] shrink-0 flex-col justify-between gap-2.5 rounded-[4px] border border-[rgba(59,37,121,0.6)] bg-[#1e1442] p-3">
+        {/* 5. Sistema inicial N0 (Lq + Catracas) */}
+        <div className="flex min-w-[265px] shrink-0 flex-col justify-between gap-2.5 rounded-[4px] border border-[rgba(59,37,121,0.6)] bg-[#1e1442] p-3">
           <div className="flex items-center justify-between gap-2">
             <span className="font-mono-tech text-[12px] font-semibold text-[#cbd5e1]">
-              Tempo na catraca
+              {timeSec === 0 ? "Sistema inicial (N₀)" : "No sistema (L)"}
             </span>
-            <span className="font-pixel text-[10px] text-[#d8b4fe]">
-              {config.turnstileServiceTimeSec} seg
-            </span>
-          </div>
-
-          {openEditor === "turnstileTime" ? (
-            <div className="flex items-center gap-1.5">
-              <input
-                type="number"
-                step="0.01"
-                min="2"
-                max="180"
-                value={draftValue}
-                onChange={(e) => setDraftValue(e.target.value)}
-                onKeyDown={(e) =>
-                  e.key === "Enter" &&
-                  applyNumberConfig("turnstileServiceTimeSec", 2, 180)
-                }
-                className="w-20 rounded border border-[#d8b4fe]/60 bg-[#150d30] px-2 py-1 text-[11px] text-white outline-none"
-              />
-              <span className="text-[10px] text-slate-400">seg</span>
-              <button
-                type="button"
-                onClick={() =>
-                  applyNumberConfig("turnstileServiceTimeSec", 2, 180)
-                }
-                className="font-pixel cursor-pointer rounded bg-[#10b981] px-2 py-1 text-[8px] text-[#020617]"
-              >
-                OK
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() =>
-                toggleEditor(
-                  "turnstileTime",
-                  String(config.turnstileServiceTimeSec)
-                )
-              }
-              className="font-pixel w-fit cursor-pointer rounded-[4px] border border-[rgba(255,42,133,0.6)] bg-[rgba(255,42,133,0.3)] px-2.5 py-1.5 text-[9px] text-[#fbcfe8] transition-colors hover:bg-[rgba(255,42,133,0.5)]"
+            <span
+              className="font-pixel text-[10px] text-[#d8b4fe]"
+              title={`Fila externa Lq = ${externalQueueCount}`}
             >
-              Alterar tempo
-            </button>
-          )}
-        </div>
-
-        {/* 5. Capacidade Máxima do Buffet (K) */}
-        <div className="flex min-w-[265px] shrink-0 flex-col justify-between gap-2 rounded-[4px] border border-[rgba(59,37,121,0.6)] bg-[#1e1442] p-3">
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-mono-tech max-w-[160px] text-[12px] font-semibold leading-[15px] text-[#cbd5e1]">
-              Capacidade Máxima do buffet
-            </span>
-            <span className="font-pixel text-[10px] text-[#ff2a85]">
-              K = {config.buffetCapacity}
-            </span>
-          </div>
-
-          {openEditor === "buffetCapacity" ? (
-            <div className="flex items-center gap-1.5">
-              <input
-                type="number"
-                min="1"
-                max="300"
-                value={draftValue}
-                onChange={(e) => setDraftValue(e.target.value)}
-                onKeyDown={(e) =>
-                  e.key === "Enter" &&
-                  applyNumberConfig("buffetCapacity", 1, 300)
-                }
-                className="w-20 rounded border border-[#ff2a85]/60 bg-[#150d30] px-2 py-1 text-[11px] text-white outline-none"
-              />
-              <button
-                type="button"
-                onClick={() => applyNumberConfig("buffetCapacity", 1, 300)}
-                className="font-pixel cursor-pointer rounded bg-[#10b981] px-2 py-1 text-[8px] text-[#020617]"
-              >
-                OK
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() =>
-                toggleEditor("buffetCapacity", String(config.buffetCapacity))
-              }
-              className="font-pixel w-fit cursor-pointer rounded-[4px] border border-[rgba(255,42,133,0.6)] bg-[rgba(255,42,133,0.3)] px-2.5 py-1.5 text-[9px] text-[#fbcfe8] transition-colors hover:bg-[rgba(255,42,133,0.5)]"
-            >
-              Alterar capacidade
-            </button>
-          )}
-        </div>
-
-        {/* 6. Fila inicial */}
-        <div className="flex min-w-[250px] shrink-0 flex-col justify-between gap-2.5 rounded-[4px] border border-[rgba(59,37,121,0.6)] bg-[#1e1442] p-3">
-          <div className="flex items-center justify-between gap-2">
-            <span className="font-mono-tech text-[12px] font-semibold text-[#cbd5e1]">
-              Fila inicial
-            </span>
-            <span className="font-pixel text-[10px] text-[#d8b4fe]">
-              {timeSec === 0 ? config.initialQueue : externalQueueCount} alunos
+              {timeSec === 0 ? config.initialQueue : systemNCount} alunos
             </span>
           </div>
 
@@ -454,28 +411,26 @@ export function ParametersBar({
               </button>
             </div>
           ) : (
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() =>
-                  toggleEditor(
-                    "initialQueue",
-                    timeSec === 0 ? String(config.initialQueue) : "5"
-                  )
-                }
-                className="font-pixel cursor-pointer rounded-[4px] border border-[rgba(255,42,133,0.6)] bg-[rgba(255,42,133,0.3)] px-2.5 py-1.5 text-[9px] text-[#fbcfe8] transition-colors hover:bg-[rgba(255,42,133,0.5)]"
-              >
-                Adicionar mais alunos
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() =>
+                toggleEditor(
+                  "initialQueue",
+                  timeSec === 0 ? String(config.initialQueue) : "5"
+                )
+              }
+              className="font-pixel w-fit cursor-pointer rounded-[4px] border border-[rgba(255,42,133,0.6)] bg-[rgba(255,42,133,0.3)] px-2.5 py-1.5 text-[9px] text-[#fbcfe8] transition-colors hover:bg-[rgba(255,42,133,0.5)]"
+            >
+              Adicionar mais alunos
+            </button>
           )}
         </div>
 
-        {/* 7. Fila do Buffet */}
+        {/* 6. Buffet (visualização) */}
         <div className="flex min-w-[250px] shrink-0 flex-col justify-between gap-2.5 rounded-[4px] border border-[rgba(59,37,121,0.6)] bg-[#1e1442] p-3">
           <div className="flex items-center justify-between gap-2">
             <span className="font-mono-tech text-[12px] font-semibold text-[#cbd5e1]">
-              Fila do Buffet
+              No Buffet (visual)
             </span>
             <span className="font-pixel text-[10px] text-[#d8b4fe]">
               {buffetCurrentCount} alunos
@@ -487,7 +442,7 @@ export function ParametersBar({
               <input
                 type="number"
                 min="0"
-                max={config.buffetCapacity}
+                max="300"
                 value={draftValue}
                 onChange={(e) => setDraftValue(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && applyAddBuffet()}
@@ -575,8 +530,8 @@ export function ParametersBar({
             </div>
             <span className="font-mono-tech mt-0.5 text-[10px] text-[#fca5a5]">
               {config.buffetPaused
-                ? "Saída pausada — clique p/ retomar"
-                : "Reposição de proteínas"}
+                ? "Saída visual pausada — clique p/ retomar"
+                : "Pausa visual (não bloqueia catraca)"}
             </span>
           </button>
         </div>

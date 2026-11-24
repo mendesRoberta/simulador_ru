@@ -149,6 +149,7 @@ export function SimulatorApp() {
           activeTurnstileCount={snapshot.activeTurnstileCount}
           currentLambda={snapshot.markov.currentLambda}
           buffetCurrentCount={snapshot.buffetStudents.length}
+          systemNCount={snapshot.markov.n}
           externalQueueCount={snapshot.externalQueue.length}
           timeSec={snapshot.timeSec}
           onUpdateConfig={handleUpdateConfig}

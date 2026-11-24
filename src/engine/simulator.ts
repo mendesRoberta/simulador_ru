@@ -1,11 +1,13 @@
 /**
  * Motor de Simulação da Fila do Restaurante Universitário (UFOPA)
  *
- * Arquitetura pura em TypeScript:
- * - Sistema em 2 etapas (Tandem):
- *   Fase 1 (Fila Externa) -> Fase 2 (Catracas: c servidores) -> Fase 3 (Buffet: K vagas simultâneas)
+ * Arquitetura pura em TypeScript (sem dependências de UI/React):
+ * - Sistema principal modelado: Fase 1 (Fila Externa: Lq) + Fase 2 (Catracas: c servidores)
+ *   - Estado L (stateN) = alunos na fila externa + alunos em atendimento nas catracas
+ *   - Sem limite de capacidade K e sem bloqueio pelo buffet
+ * - Fase 3 (Buffet): elemento exclusivamente visual/animação pós-catraca (não interfere em L, W ou vazão)
  * - Passo discreto: Δt = 1s
- * - Cadeia de Markov para Fase 1 + 2 (estado n = fila externa + passando nas catracas)
+ * - Cadeia de Markov (nascimento e morte discretizada)
  * - Gerador pseudoaleatório determinístico Mulberry32 para reprodutibilidade entre cenários
  */
 
@@ -17,11 +19,11 @@ export const MAX_TURNSTILES = 5;
 
 export type ArrivalMode = "constant" | "peak_wave";
 export type SimSpeed = 1 | 2 | 5;
-export type TurnstileStatus = "ok" | "wait" | "off" | "fault" | "blocked";
+export type TurnstileStatus = "ok" | "wait" | "off" | "fault";
 export type WavePhase = "constante" | "calma" | "pico";
 
 export interface SimConfig {
-  /** Taxa de chegada λ em modo constante (alunos/min). Base aferição 12h–13h: 5.03 (302/60) */
+  /** Taxa de chegada λ em modo constante (alunos/min). Base oficial: 302 / 60 ≈ 5.0333 */
   lambda: number;
   /** Taxa de chegada λ no trecho calmo do Modo Onda de Pico (12:45–13:00). Padrão: 4.13 */
   calmLambda: number;
@@ -31,35 +33,32 @@ export interface SimConfig {
   arrivalMode: ArrivalMode;
   /** Quais das 5 catracas (C1..C5) estão habilitadas */
   turnstileEnabled: [boolean, boolean, boolean, boolean, boolean];
-  /** Tempo médio de atendimento em cada catraca (segundos). Padrão: 12.64s */
+  /** Tempo médio de atendimento em cada catraca (seg). Base oficial: 3579 / 282 ≈ 12.6915s */
   turnstileServiceTimeSec: number;
-  /** Tempo médio de permanência no buffet (segundos). Padrão: 263s (4.39 min) */
+  /** Tempo médio visual de permanência no buffet (seg) — apenas animação pós-catraca */
   buffetServiceTimeSec: number;
-  /** Capacidade máxima de vagas simultâneas no buffet (K). Padrão: 30 */
-  buffetCapacity: number;
-  /** Quantidade inicial de alunos na fila externa (n0) às 12:00:00. Padrão: 10 */
+  /** Quantidade inicial N0 no sistema principal (fila externa + catraca) às 12:00:00. Padrão: 10 */
   initialQueue: number;
-  /** Quantidade inicial de alunos já servindo no buffet às 12:00:00. Padrão: 0 */
+  /** Quantidade inicial visual de alunos se servindo no buffet às 12:00:00. Padrão: 0 */
   initialBuffet: number;
   /** Injeção de falha: pausa 1 catraca ativa temporariamente */
   turnstileFault: boolean;
-  /** Injeção de falha: pausa a saída do buffet (gera bloqueio na fila) */
+  /** Injeção visual: pausa a saída visual do buffet (nunca bloqueia as catracas) */
   buffetPaused: boolean;
   /** Semente fixa para o gerador pseudoaleatório Mulberry32 */
   seed: number;
 }
 
 export const DEFAULT_CONFIG: SimConfig = {
-  lambda: 5.03, // 302 chegadas / 60 min (taxa global)
+  lambda: 302 / 60, // 5.0333 pessoas/min (302 chegadas em 60 min)
   calmLambda: 4.13, // Trecho calmo: 12:45–13:00 (62 chegadas / 15 min)
   peakLambda: 5.33, // Trecho de pico: 12:00–12:45 (240 chegadas / 45 min)
   arrivalMode: "constant",
   turnstileEnabled: [true, false, false, false, false], // 1 catraca ativa
-  turnstileServiceTimeSec: 12.64, // Tempo médio real na catraca (μ = 4.75 al/min -> ρ = 106%)
-  buffetServiceTimeSec: 263, // 4.39 min médios (Catraca -> Saída do bandejão)
-  buffetCapacity: 30, // Pico real observado = 29 simultâneos (K = 30 -> ρ_buffet = 73.6%)
-  initialQueue: 10, // 10 alunos na fila inicial às 12:00:00
-  initialBuffet: 0, // 0 alunos se servindo às 12:00:00
+  turnstileServiceTimeSec: 3579 / 282, // 12.6915s -> μ ≈ 4.7276/min, ρ1 ≈ 106.47%, ρ2 ≈ 53.23%
+  buffetServiceTimeSec: 263, // 4.39 min médios (somente animação visual pós-catraca)
+  initialQueue: 10, // N0 = 10 no sistema inicial (9 em Lq + 1 na C-01)
+  initialBuffet: 0, // 0 alunos visualmente no buffet às 12:00:00
   turnstileFault: false,
   buffetPaused: false,
   seed: DEFAULT_SEED,
@@ -87,16 +86,14 @@ export interface HistoryPoint {
   timeSec: number;
   /** Alunos esperando na fila externa (Lq) */
   queueLength: number;
-  /** Estado n da Cadeia de Markov (fila externa + catracas) */
+  /** Total de pessoas no sistema principal: L = stateN (fila externa + catracas) */
   stateN: number;
-  /** Alunos atualmente no buffet */
+  /** Alunos apenas na visualização do buffet (fora do sistema principal) */
   buffetCount: number;
-  /** Total de alunos no sistema (L) */
-  totalInSystem: number;
 }
 
 export interface MarkovTelemetry {
-  /** Estado atual n = fila externa + passando nas catracas */
+  /** Estado atual L = n = fila externa (Lq) + passando nas catracas */
   n: number;
   /** Passo discreto Δt (segundos) */
   dt: number;
@@ -121,59 +118,62 @@ export interface LittleLawMetrics {
   lambdaEffectivePerSec: number;
   /** Taxa λ efetiva em alunos/minuto */
   lambdaEffectivePerMin: number;
-  /** Tempo médio total no sistema W (segundos) */
+  /** Tempo médio total no sistema principal W = Wq + tempo na catraca (segundos) */
   avgTotalTimeSec: number;
-  /** L teórico pela Lei de Little (L = λ * W) */
+  /** Referência teórica L = λ · W (exclusivamente Fila Externa + Catracas) */
   littleL: number;
-  /** L médio observado integrado ao longo do tempo */
+  /** L médio observado (média temporal de stateN) */
   observedAvgL: number;
-  /** Total de discentes atualmente no sistema */
+  /** L atual no sistema principal (stateN) */
   currentL: number;
-  /** Se o sistema está matematicamente estável (ρ < 1 em ambas as etapas) */
+  /** Lq médio observado (média temporal da fila externa) */
+  observedAvgLq: number;
+  /** Se o sistema principal está matematicamente estável (ρ_catracas < 1) */
   isStable: boolean;
-  /** Status de conformidade com a Lei de Little */
-  conformanceLabel: string;
+  /** Rótulo teórico (sem afirmar validação numérica) */
+  referenceLabel: string;
 }
 
 export interface TimeDistribution {
   queuePct: number;
   turnstilePct: number;
-  buffetPct: number;
   avgQueueSec: number;
   avgTurnstileSec: number;
-  avgBuffetSec: number;
   avgTotalSec: number;
 }
 
 export interface SimKPIs {
   /** Utilização das catracas: ρ_catracas = λ / (c * μ) */
   rhoTurnstiles: number;
-  /** Utilização do buffet: ρ_buffet = λ / (K * (60 / T_buffet)) */
-  rhoBuffet: number;
   /** Alerta de saturação nas catracas (ρ >= 1) */
   turnstileOverloaded: boolean;
-  /** Alerta de saturação no buffet (ρ >= 1) */
-  buffetOverloaded: boolean;
-  /** Pico máximo de alunos na fila externa */
-  maxQueue: number;
-  /** Instante (segundos) em que ocorreu o pico máximo */
-  maxQueueTimeSec: number;
-  /** Pico máximo do estado n (fila externa + catracas) */
+  /** Pico máximo do sistema principal L (stateN) */
   maxN: number;
-  /** Fração do tempo (%) em que n >= 10 */
+  /** Instante (segundos) em que ocorreu o pico máximo de L */
+  maxNTimeSec: number;
+  /** Pico máximo da fila externa Lq */
+  maxQueue: number;
+  /** Fração do tempo (%) em que L (stateN) >= 10 */
   longQueuePct: number;
-  /** Vazão efetiva de saída do buffet (refeições/min) */
+  /** Amostragem minuto a minuto (0..60): quantos minutos registraram L >= 10 */
+  longQueueMinuteCount: number;
+  /** Total de registros minuto a minuto coletados até o momento */
+  minuteSampleCount: number;
+  /** Percentual de minutos amostrados com L >= 10 */
+  longQueueMinutePct: number;
+  /** Vazão efetiva de saída das catracas (alunos/min) */
   throughputPerMin: number;
 }
 
 export interface SimSnapshot {
   config: SimConfig;
   timeSec: number;
+  /** Total de alunos que concluíram a passagem na catraca */
   servedCount: number;
   externalQueue: Student[];
   turnstiles: TurnstileSlot[];
+  /** Apenas visualização/animação pós-catraca */
   buffetStudents: Student[];
-  buffetBlocked: boolean;
   /** Catracas habilitadas pelo usuário (1..5), define o badge M/M/c */
   activeTurnstileCount: number;
   /** Catracas efetivamente operando (descontando Pane Catraca) */
@@ -183,6 +183,8 @@ export interface SimSnapshot {
   distribution: TimeDistribution;
   kpis: SimKPIs;
   history: HistoryPoint[];
+  /** Amostragem exata minuto a minuto (60 registros em Simular 1h, alinhada à aferição) */
+  minuteSamples: HistoryPoint[];
   isOneHourComplete: boolean;
 }
 
@@ -254,41 +256,44 @@ export function formatLunchClock(elapsedSec: number, startHour = 12): string {
 export class RUSimulator {
   private config: SimConfig;
   private rng: () => number;
+  /** PRNG separado para a animação visual do buffet, garantindo 0 interferência na Cadeia de Markov principal */
+  private buffetRng: () => number;
 
   private timeSec = 0;
   private nextStudentId = 1;
+  /** Concluíram a catraca (saída do sistema principal) */
   private servedCount = 0;
   private totalArrivals = 0;
 
   private externalQueue: Student[] = [];
   private turnstileOccupants: (Student | null)[] = [null, null, null, null, null];
+  /** Apenas visual/animação pós-catraca (sem capacidade K e sem bloqueio) */
   private buffetStudents: Student[] = [];
 
-  // Acumuladores temporais para métricas exatas
-  private sumL = 0;
+  // Acumuladores temporais do sistema principal (L = stateN, Lq = externalQueue)
+  private sumN = 0;
   private sumQueue = 0;
-  private sumTurnstile = 0;
-  private sumBuffet = 0;
   private longQueueTicks = 0;
 
-  // Acumuladores empíricos de alunos que completaram o percurso
+  // Acumuladores empíricos de quem concluiu a catraca (W = Wq + tempo na catraca)
   private completedQueueSec = 0;
   private completedTurnstileSec = 0;
-  private completedBuffetSec = 0;
   private completedTotalSec = 0;
 
   // Picos
-  private maxQueue = 0;
-  private maxQueueTimeSec = 0;
   private maxN = 0;
+  private maxNTimeSec = 0;
+  private maxQueue = 0;
 
-  // Histórico amostrado para o gráfico
+  // Histórico amostrado para o gráfico + amostragem minuto a minuto (60 registros em 1h)
   private history: HistoryPoint[] = [];
+  private minuteSamples: HistoryPoint[] = [];
   private isOneHourComplete = false;
 
   constructor(initialConfig?: Partial<SimConfig>) {
     this.config = this.sanitizeConfig({ ...DEFAULT_CONFIG, ...initialConfig });
     this.rng = mulberry32(this.config.seed);
+    this.buffetRng = mulberry32((this.config.seed ^ 0x9e3779b9) >>> 0);
     this.initializeState();
   }
 
@@ -296,7 +301,7 @@ export class RUSimulator {
     const enabled: [boolean, boolean, boolean, boolean, boolean] = [
       ...cfg.turnstileEnabled,
     ] as [boolean, boolean, boolean, boolean, boolean];
-    // Garante pelo menos 1 catraca configurada como ativa
+    // Garante pelo menos 1 catraca configurada como ativa (M/M/1 .. M/M/5)
     if (!enabled.some(Boolean)) {
       enabled[0] = true;
     }
@@ -306,9 +311,14 @@ export class RUSimulator {
       calmLambda: Math.max(0.1, Math.min(60, Number(cfg.calmLambda) || DEFAULT_CONFIG.calmLambda)),
       peakLambda: Math.max(0.1, Math.min(60, Number(cfg.peakLambda) || DEFAULT_CONFIG.peakLambda)),
       turnstileEnabled: enabled,
-      turnstileServiceTimeSec: Math.max(2, Math.min(180, Number(cfg.turnstileServiceTimeSec) || DEFAULT_CONFIG.turnstileServiceTimeSec)),
-      buffetServiceTimeSec: Math.max(10, Math.min(900, Number(cfg.buffetServiceTimeSec) || DEFAULT_CONFIG.buffetServiceTimeSec)),
-      buffetCapacity: Math.max(1, Math.min(300, Math.round(Number(cfg.buffetCapacity) || DEFAULT_CONFIG.buffetCapacity))),
+      turnstileServiceTimeSec: Math.max(
+        2,
+        Math.min(180, Number(cfg.turnstileServiceTimeSec) || DEFAULT_CONFIG.turnstileServiceTimeSec)
+      ),
+      buffetServiceTimeSec: Math.max(
+        10,
+        Math.min(900, Number(cfg.buffetServiceTimeSec) || DEFAULT_CONFIG.buffetServiceTimeSec)
+      ),
       initialQueue: Math.max(0, Math.min(300, Math.round(Number(cfg.initialQueue) || 0))),
       initialBuffet: Math.max(0, Math.min(300, Math.round(Number(cfg.initialBuffet) || 0))),
       seed: Number.isFinite(cfg.seed) ? cfg.seed : DEFAULT_SEED,
@@ -317,6 +327,7 @@ export class RUSimulator {
 
   private initializeState(): void {
     this.rng = mulberry32(this.config.seed);
+    this.buffetRng = mulberry32((this.config.seed ^ 0x9e3779b9) >>> 0);
     this.timeSec = 0;
     this.nextStudentId = 1;
     this.servedCount = 0;
@@ -325,21 +336,17 @@ export class RUSimulator {
     this.turnstileOccupants = [null, null, null, null, null];
     this.buffetStudents = [];
 
-    this.sumL = 0;
+    this.sumN = 0;
     this.sumQueue = 0;
-    this.sumTurnstile = 0;
-    this.sumBuffet = 0;
     this.longQueueTicks = 0;
 
     this.completedQueueSec = 0;
     this.completedTurnstileSec = 0;
-    this.completedBuffetSec = 0;
     this.completedTotalSec = 0;
     this.isOneHourComplete = false;
 
-    // Popula alunos iniciais no buffet (respeitando capacidade K)
-    const initBuffet = Math.min(this.config.initialBuffet, this.config.buffetCapacity);
-    for (let i = 0; i < initBuffet; i++) {
+    // Popula alunos visuais iniciais no buffet (sem limite K)
+    for (let i = 0; i < this.config.initialBuffet; i++) {
       this.buffetStudents.push({
         id: this.nextStudentId++,
         arrivedAt: 0,
@@ -349,7 +356,8 @@ export class RUSimulator {
       });
     }
 
-    // Popula fila inicial n0 na Fase 1 (os alunos só avançam para as catracas ao iniciar t > 0)
+    // Popula condição inicial N0 = 10 no sistema principal e aloca imediatamente nas catracas ativas
+    // Em M/M/1 padrão: Lq = 9 na fila externa + 1 em atendimento na C-01 (L = stateN = 10)
     for (let i = 0; i < this.config.initialQueue; i++) {
       this.externalQueue.push({
         id: this.nextStudentId++,
@@ -360,10 +368,12 @@ export class RUSimulator {
       });
     }
 
+    this.reconcileTurnstiles();
+
     const n0 = this.getStateN();
-    this.maxQueue = this.externalQueue.length;
-    this.maxQueueTimeSec = 0;
     this.maxN = n0;
+    this.maxNTimeSec = 0;
+    this.maxQueue = this.externalQueue.length;
 
     this.history = [
       {
@@ -371,14 +381,13 @@ export class RUSimulator {
         queueLength: this.externalQueue.length,
         stateN: n0,
         buffetCount: this.buffetStudents.length,
-        totalInSystem: n0 + this.buffetStudents.length,
       },
     ];
+    this.minuteSamples = [];
   }
 
   /**
    * Identifica o índice (0..4) da catraca atualmente em pane, caso `turnstileFault` esteja ativo.
-   * Pausa a última catraca habilitada (ex.: se C1..C3 ativas, C3 sofre pane; se só C1 ativa, C1 sofre pane).
    */
   private getFaultedTurnstileIndex(): number {
     if (!this.config.turnstileFault) return -1;
@@ -409,7 +418,6 @@ export class RUSimulator {
   private reconcileTurnstiles(): void {
     const operationalSet = new Set(this.getOperationalIndices());
 
-    // Devolve alunos de catracas que pararam de operar para a frente da fila
     for (let i = MAX_TURNSTILES - 1; i >= 0; i--) {
       if (!operationalSet.has(i) && this.turnstileOccupants[i] !== null) {
         const displaced = this.turnstileOccupants[i]!;
@@ -418,7 +426,6 @@ export class RUSimulator {
       }
     }
 
-    // Aloca próximos alunos nas catracas operacionais livres
     for (const idx of operationalSet) {
       if (this.turnstileOccupants[idx] === null && this.externalQueue.length > 0) {
         const next = this.externalQueue.shift()!;
@@ -438,12 +445,14 @@ export class RUSimulator {
     return count;
   }
 
+  /** Estado L = stateN: total de pessoas no sistema principal (fila externa + catracas) */
   private getStateN(): number {
     return this.externalQueue.length + this.getInTurnstilesCount();
   }
 
   /**
-   * Calcula as probabilidades da Cadeia de Markov para o estado atual (Fase 1 + 2).
+   * Calcula as probabilidades da Cadeia de Markov do sistema principal (Fila Externa + Catracas).
+   * Sem limite de capacidade K e sem bloqueio pelo buffet.
    */
   private computeMarkovTelemetry(): MarkovTelemetry {
     const { lambda: currentLambda, wavePhase } = getArrivalRateAtTime(
@@ -453,15 +462,14 @@ export class RUSimulator {
     const n = this.getStateN();
     const effectiveTurnstiles = this.getOperationalIndices().length;
     const muPerTurnstile = 60 / this.config.turnstileServiceTimeSec;
-    const buffetBlocked = this.buffetStudents.length >= this.config.buffetCapacity;
 
     // Probabilidade de chegada (subir estado): a = λ * (Δt / 60)
     let probUp = currentLambda * (DT_SECONDS / 60);
 
-    // Probabilidade de saída das catracas (descer estado): s = min(n, c) * μ * (Δt / 60)
-    // Se n = 0, c_eff = 0 ou buffet bloqueado (lotado em K), s = 0
+    // Probabilidade de conclusão na catraca (descer estado): s = min(n, c) * μ * (Δt / 60)
+    // Nunca é bloqueada pelo buffet.
     let probDown =
-      n > 0 && effectiveTurnstiles > 0 && !buffetBlocked
+      n > 0 && effectiveTurnstiles > 0
         ? Math.min(n, effectiveTurnstiles) * muPerTurnstile * (DT_SECONDS / 60)
         : 0;
 
@@ -497,10 +505,10 @@ export class RUSimulator {
     const markov = this.computeMarkovTelemetry();
     const nextTime = this.timeSec + DT_SECONDS;
 
-    // 1. Transição da Cadeia de Markov (Fase 1 + Fase 2)
+    // 1. Transição da Cadeia de Markov do Sistema Principal (Fila Externa + Catracas)
     const u = this.rng();
     if (u < markov.probUp) {
-      // Chegada (n -> n + 1)
+      // Chegada (L -> L + 1)
       const student: Student = {
         id: this.nextStudentId++,
         arrivedAt: nextTime,
@@ -511,7 +519,7 @@ export class RUSimulator {
       this.externalQueue.push(student);
       this.totalArrivals += 1;
     } else if (u < markov.probUp + markov.probDown) {
-      // Serviço concluído na catraca (n -> n - 1): move discente mais antigo nas catracas para o buffet
+      // Conclusão na catraca (L -> L - 1): término oficial do sistema modelado
       let oldestSlot = -1;
       let oldestTime = Infinity;
       for (let i = 0; i < MAX_TURNSTILES; i++) {
@@ -529,6 +537,18 @@ export class RUSimulator {
         const student = this.turnstileOccupants[oldestSlot]!;
         this.turnstileOccupants[oldestSlot] = null;
         student.enteredBuffetAt = nextTime;
+
+        // Contabiliza saída do sistema principal (catraca concluída)
+        this.servedCount += 1;
+        const tTurnstile = student.enteredTurnstileAt ?? student.arrivedAt;
+        const waitQ = Math.max(0, tTurnstile - student.arrivedAt);
+        const waitC = Math.max(0, nextTime - tTurnstile);
+
+        this.completedQueueSec += waitQ;
+        this.completedTurnstileSec += waitC;
+        this.completedTotalSec += waitQ + waitC;
+
+        // Envia apenas para a animação visual do buffet (sem limite K)
         this.buffetStudents.push(student);
       }
     }
@@ -537,25 +557,13 @@ export class RUSimulator {
     this.timeSec = nextTime;
     this.reconcileTurnstiles();
 
-    // 2. Fase 3 (Buffet com K vagas simultâneas)
+    // 2. Fase 3 (Buffet — somente animação visual pós-catraca, não afeta métricas do sistema)
     if (!this.config.buffetPaused && this.buffetStudents.length > 0) {
       const pExitBuffet = Math.min(1, DT_SECONDS / this.config.buffetServiceTimeSec);
       const remaining: Student[] = [];
       for (const student of this.buffetStudents) {
-        if (this.rng() < pExitBuffet) {
+        if (this.buffetRng() < pExitBuffet) {
           student.exitedAt = this.timeSec;
-          this.servedCount += 1;
-
-          const tTurnstile = student.enteredTurnstileAt ?? student.arrivedAt;
-          const tBuffet = student.enteredBuffetAt ?? tTurnstile;
-          const waitQ = Math.max(0, tTurnstile - student.arrivedAt);
-          const waitC = Math.max(0, tBuffet - tTurnstile);
-          const waitB = Math.max(0, this.timeSec - tBuffet);
-
-          this.completedQueueSec += waitQ;
-          this.completedTurnstileSec += waitC;
-          this.completedBuffetSec += waitB;
-          this.completedTotalSec += waitQ + waitC + waitB;
         } else {
           remaining.push(student);
         }
@@ -563,42 +571,48 @@ export class RUSimulator {
       this.buffetStudents = remaining;
     }
 
-    // 3. Atualiza acumuladores estatísticos e histórico
+    // 3. Atualiza acumuladores estatísticos do sistema principal (L e Lq)
     const queueLen = this.externalQueue.length;
-    const inTurnstiles = this.getInTurnstilesCount();
-    const stateN = queueLen + inTurnstiles;
+    const stateN = this.getStateN();
     const buffetLen = this.buffetStudents.length;
-    const totalL = stateN + buffetLen;
 
     this.sumQueue += queueLen;
-    this.sumTurnstile += inTurnstiles;
-    this.sumBuffet += buffetLen;
-    this.sumL += totalL;
+    this.sumN += stateN;
 
     if (stateN >= LONG_QUEUE_THRESHOLD) {
       this.longQueueTicks += 1;
     }
 
-    if (queueLen > this.maxQueue) {
-      this.maxQueue = queueLen;
-      this.maxQueueTimeSec = this.timeSec;
-    }
     if (stateN > this.maxN) {
       this.maxN = stateN;
+      this.maxNTimeSec = this.timeSec;
+    }
+    if (queueLen > this.maxQueue) {
+      this.maxQueue = queueLen;
     }
 
-    // Amostra o histórico a cada 5 segundos (ou nos primeiros 10s a cada segundo) para manter o gráfico leve e preciso
+    // Amostragem minuto a minuto (alinhada aos 60 registros da aferição em 1h)
+    if (this.timeSec % 60 === 0) {
+      this.minuteSamples.push({
+        timeSec: this.timeSec,
+        queueLength: queueLen,
+        stateN,
+        buffetCount: buffetLen,
+      });
+    }
+
+    // Amostra o histórico a cada 5 segundos (ou nos primeiros 10s a cada segundo) para o gráfico
     if (this.timeSec <= 10 || this.timeSec % 5 === 0) {
       this.history.push({
         timeSec: this.timeSec,
         queueLength: queueLen,
         stateN,
         buffetCount: buffetLen,
-        totalInSystem: totalL,
       });
-      // Limita tamanho em simulações muito longas (> 2h) preservando resolução
       if (this.history.length > 1500) {
-        this.history = this.history.filter((_, idx) => idx % 2 === 0 || idx === this.history.length - 1);
+        this.history = this.history.filter(
+          (_, idx) => idx % 2 === 0 || idx === this.history.length - 1
+        );
       }
     }
 
@@ -615,25 +629,20 @@ export class RUSimulator {
 
   /**
    * Modo "Simular 1h": reinicia com a semente fixa atual, executa 3600 passos (60 min)
-   * instantaneamente, plota a série completa de 60 minutos e congela os KPIs finais.
+   * instantaneamente, registra os 60 pontos minuto a minuto e congela os KPIs finais.
    */
   public simulateOneHour(): SimSnapshot {
     this.initializeState();
     for (let i = 0; i < ONE_HOUR_SECONDS; i++) {
       this.step();
     }
-    // Garante ponto final exato em t = 3600
     const last = this.history[this.history.length - 1];
     if (!last || last.timeSec !== ONE_HOUR_SECONDS) {
-      const q = this.externalQueue.length;
-      const n = this.getStateN();
-      const b = this.buffetStudents.length;
       this.history.push({
         timeSec: this.timeSec,
-        queueLength: q,
-        stateN: n,
-        buffetCount: b,
-        totalInSystem: n + b,
+        queueLength: this.externalQueue.length,
+        stateN: this.getStateN(),
+        buffetCount: this.buffetStudents.length,
       });
     }
     this.isOneHourComplete = true;
@@ -650,9 +659,7 @@ export class RUSimulator {
 
   public updateConfig(partial: Partial<SimConfig>): SimSnapshot {
     this.config = this.sanitizeConfig({ ...this.config, ...partial });
-    if (this.timeSec > 0) {
-      this.reconcileTurnstiles();
-    }
+    this.reconcileTurnstiles();
     return this.getSnapshot();
   }
 
@@ -668,23 +675,20 @@ export class RUSimulator {
       });
       this.totalArrivals += 1;
     }
-    if (this.timeSec > 0) {
-      this.reconcileTurnstiles();
-    }
-    if (this.externalQueue.length > this.maxQueue) {
-      this.maxQueue = this.externalQueue.length;
-      this.maxQueueTimeSec = this.timeSec;
-    }
+    this.reconcileTurnstiles();
     const stateN = this.getStateN();
     if (stateN > this.maxN) {
       this.maxN = stateN;
+      this.maxNTimeSec = this.timeSec;
+    }
+    if (this.externalQueue.length > this.maxQueue) {
+      this.maxQueue = this.externalQueue.length;
     }
     return this.getSnapshot();
   }
 
   public addStudentsToBuffet(count: number): SimSnapshot {
-    const freeSlots = Math.max(0, this.config.buffetCapacity - this.buffetStudents.length);
-    const toAdd = Math.max(0, Math.min(freeSlots, Math.round(count)));
+    const toAdd = Math.max(0, Math.min(100, Math.round(count)));
     for (let i = 0; i < toAdd; i++) {
       this.buffetStudents.push({
         id: this.nextStudentId++,
@@ -714,7 +718,6 @@ export class RUSimulator {
     const markov = this.computeMarkovTelemetry();
     const activeTurnstileCount = this.config.turnstileEnabled.filter(Boolean).length;
     const faultIdx = this.getFaultedTurnstileIndex();
-    const buffetBlocked = this.buffetStudents.length >= this.config.buffetCapacity;
 
     // Monta slots visuais das 5 catracas numeradas dinamicamente (C-01 .. C-05)
     const turnstiles: TurnstileSlot[] = [];
@@ -733,9 +736,6 @@ export class RUSimulator {
       } else if (faulted) {
         status = "fault";
         label = "Pane leitor QR";
-      } else if (buffetBlocked) {
-        status = "blocked";
-        label = student ? `Discente #${student.id} (Bloq.)` : "Buffet lotado";
       } else if (student) {
         const readingTime = this.timeSec - (student.enteredTurnstileAt ?? this.timeSec);
         if (readingTime >= Math.ceil(this.config.turnstileServiceTimeSec * 0.65)) {
@@ -761,68 +761,52 @@ export class RUSimulator {
       });
     }
 
-    // Utilizações teóricas instantâneas
+    // Utilização teórica das catracas: ρ_catracas = λ / (c * μ)
     const cEff = markov.effectiveTurnstiles;
     const totalTurnstileRate = cEff * markov.muPerTurnstile; // al/min
     const rhoTurnstiles =
       totalTurnstileRate > 0 ? markov.currentLambda / totalTurnstileRate : Infinity;
 
-    const totalBuffetRate = this.config.buffetPaused
-      ? 0
-      : this.config.buffetCapacity * (60 / this.config.buffetServiceTimeSec);
-    const rhoBuffet =
-      totalBuffetRate > 0 ? markov.currentLambda / totalBuffetRate : Infinity;
-
-    // Distribuição temporal (Fila Externa vs Catraca vs Buffet)
+    // Tempos médios exclusivamente do sistema principal (quem concluiu a catraca: W = Wq + tempo catraca)
     let avgQueueSec: number;
     let avgTurnstileSec: number;
-    let avgBuffetSec: number;
 
-    if (this.servedCount >= 3) {
+    if (this.servedCount > 0) {
       avgQueueSec = this.completedQueueSec / this.servedCount;
       avgTurnstileSec = this.completedTurnstileSec / this.servedCount;
-      avgBuffetSec = this.completedBuffetSec / this.servedCount;
-    } else if (this.timeSec > 0 && this.sumL > 0) {
-      // Estimativa consistente durante o aquecimento antes dos primeiros términos no buffet
+    } else if (this.timeSec > 0 && this.sumQueue > 0) {
       const lambdaSec = Math.max(1e-6, markov.currentLambda / 60);
-      const obsAvgQ = this.sumQueue / this.timeSec;
-      avgQueueSec = obsAvgQ / lambdaSec;
+      avgQueueSec = this.sumQueue / this.timeSec / lambdaSec;
       avgTurnstileSec = this.config.turnstileServiceTimeSec;
-      avgBuffetSec = this.config.buffetServiceTimeSec;
     } else {
-      // t = 0: estimativa inicial com base na fila inicial n0
+      // t = 0: estimativa inicial com base em Lq inicial
       const capRateSec = Math.max(1e-6, (cEff * markov.muPerTurnstile) / 60);
       avgQueueSec = this.externalQueue.length / capRateSec;
       avgTurnstileSec = this.config.turnstileServiceTimeSec;
-      avgBuffetSec = this.config.buffetServiceTimeSec;
     }
 
-    const avgTotalSec = Math.max(1e-6, avgQueueSec + avgTurnstileSec + avgBuffetSec);
+    const avgTotalSec = Math.max(1e-6, avgQueueSec + avgTurnstileSec);
     const queuePct = (avgQueueSec / avgTotalSec) * 100;
-    const turnstilePct = (avgTurnstileSec / avgTotalSec) * 100;
-    const buffetPct = Math.max(0, 100 - queuePct - turnstilePct);
+    const turnstilePct = Math.max(0, 100 - queuePct);
 
-    // Lei de Little: L = λ * W
+    // Lei de Little (Referência Teórica) — exclusivamente Fila Externa + Catraca (sem buffet)
     const lambdaEffectivePerSec =
       this.timeSec >= 30 && this.totalArrivals > 0
         ? this.totalArrivals / this.timeSec
         : markov.currentLambda / 60;
     const lambdaEffectivePerMin = lambdaEffectivePerSec * 60;
     const littleL = lambdaEffectivePerSec * avgTotalSec;
-    const currentL = markov.n + this.buffetStudents.length;
-    const observedAvgL = this.timeSec > 0 ? this.sumL / this.timeSec : currentL;
-    const isStable = rhoTurnstiles < 1 && rhoBuffet < 1;
+    const currentL = markov.n;
+    const observedAvgL = this.timeSec > 0 ? this.sumN / this.timeSec : currentL;
+    const observedAvgLq =
+      this.timeSec > 0 ? this.sumQueue / this.timeSec : this.externalQueue.length;
+    const isStable = rhoTurnstiles < 1;
 
-    let conformanceLabel = "(Aquecendo)";
-    if (!isStable) {
-      conformanceLabel = "(Instável: ρ ≥ 1)";
-    } else if (this.servedCount >= 5) {
-      const relDiff = Math.abs(littleL - observedAvgL) / Math.max(1, observedAvgL);
-      conformanceLabel = relDiff <= 0.25 ? "(Em conformidade)" : "(Regime transitório)";
-    } else if (this.timeSec === 0) {
-      conformanceLabel = "(Pronto para iniciar)";
-    }
+    const referenceLabel = !isStable
+      ? "Regime instável (ρ ≥ 1)"
+      : "Referência teórica (L = λ·W)";
 
+    // Fila Longa (L = stateN >= 10): fração por segundo + amostragem minuto a minuto
     const longQueuePct =
       this.timeSec > 0
         ? (this.longQueueTicks / this.timeSec) * 100
@@ -830,6 +814,14 @@ export class RUSimulator {
           ? 100
           : 0;
 
+    const minuteSampleCount = this.minuteSamples.length;
+    const longQueueMinuteCount = this.minuteSamples.filter(
+      (p) => p.stateN >= LONG_QUEUE_THRESHOLD
+    ).length;
+    const longQueueMinutePct =
+      minuteSampleCount > 0 ? (longQueueMinuteCount / minuteSampleCount) * 100 : longQueuePct;
+
+    // Vazão efetiva de saída das catracas (alunos/min)
     const throughputPerMin =
       this.timeSec > 0 ? (this.servedCount / this.timeSec) * 60 : 0;
 
@@ -840,7 +832,6 @@ export class RUSimulator {
       externalQueue: this.externalQueue.map((s) => ({ ...s })),
       turnstiles,
       buffetStudents: this.buffetStudents.map((s) => ({ ...s })),
-      buffetBlocked,
       activeTurnstileCount,
       effectiveTurnstileCount: cEff,
       markov,
@@ -851,30 +842,31 @@ export class RUSimulator {
         littleL,
         observedAvgL,
         currentL,
+        observedAvgLq,
         isStable,
-        conformanceLabel,
+        referenceLabel,
       },
       distribution: {
         queuePct,
         turnstilePct,
-        buffetPct,
         avgQueueSec,
         avgTurnstileSec,
-        avgBuffetSec,
         avgTotalSec,
       },
       kpis: {
         rhoTurnstiles,
-        rhoBuffet,
         turnstileOverloaded: rhoTurnstiles >= 1,
-        buffetOverloaded: rhoBuffet >= 1,
-        maxQueue: this.maxQueue,
-        maxQueueTimeSec: this.maxQueueTimeSec,
         maxN: this.maxN,
+        maxNTimeSec: this.maxNTimeSec,
+        maxQueue: this.maxQueue,
         longQueuePct,
+        longQueueMinuteCount,
+        minuteSampleCount,
+        longQueueMinutePct,
         throughputPerMin,
       },
       history: this.history.slice(),
+      minuteSamples: this.minuteSamples.slice(),
       isOneHourComplete: this.isOneHourComplete,
     };
   }
