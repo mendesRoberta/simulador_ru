@@ -69,7 +69,8 @@ export function SimulatorApp() {
 
   const handleReset = () => {
     setIsRunning(false);
-    const fresh = getSim().reset();
+    setSpeed(1);
+    const fresh = getSim().reset(DEFAULT_CONFIG);
     setSnapshot(fresh);
   };
 

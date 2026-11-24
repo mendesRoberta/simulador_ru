@@ -364,24 +364,24 @@ export function AnalyticsSection({ snapshot }: AnalyticsSectionProps) {
                 </filter>
               </defs>
 
-              {/* Faixa sombreada da janela de Pico (15–40 min) no Modo Onda de Pico */}
-              {config.arrivalMode === "peak_wave" && maxTimeDomain >= 900 && (
+              {/* Faixa sombreada da janela de Pico (12h00–12h45 / 0–45 min) no Modo Onda de Pico */}
+              {config.arrivalMode === "peak_wave" && (
                 <g>
                   <rect
-                    x={toX(900)}
+                    x={toX(0)}
                     y={padT}
-                    width={Math.max(0, toX(Math.min(2400, maxTimeDomain)) - toX(900))}
+                    width={Math.max(0, toX(Math.min(2700, maxTimeDomain)) - toX(0))}
                     height={plotH}
                     fill="rgba(255, 42, 133, 0.1)"
                   />
                   <text
-                    x={toX(900) + 6}
+                    x={toX(0) + 6}
                     y={padT + 13}
                     fill="#ff5493"
                     fontSize="10"
                     fontFamily="var(--font-chivo-mono), monospace"
                   >
-                    Janela de Pico (15–40m)
+                    Janela de Pico (12h00–12h45)
                   </text>
                 </g>
               )}

@@ -1,7 +1,7 @@
 /**
  * Motor de Simulação da Fila do Restaurante Universitário (UFOPA)
  *
- * Arquitetura pura em TypeScript (sem dependências de UI/React):
+ * Arquitetura pura em TypeScript:
  * - Sistema em 2 etapas (Tandem):
  *   Fase 1 (Fila Externa) -> Fase 2 (Catracas: c servidores) -> Fase 3 (Buffet: K vagas simultâneas)
  * - Passo discreto: Δt = 1s
@@ -21,25 +21,25 @@ export type TurnstileStatus = "ok" | "wait" | "off" | "fault" | "blocked";
 export type WavePhase = "constante" | "calma" | "pico";
 
 export interface SimConfig {
-  /** Taxa de chegada λ em modo constante (alunos/min). Padrão aferição 13/11/2026: 4.66 */
+  /** Taxa de chegada λ em modo constante (alunos/min). Base aferição 12h–13h: 5.03 (302/60) */
   lambda: number;
-  /** Taxa de chegada λ na fase calma do Modo Onda de Pico (0-15 min e 40-60 min). Padrão: 3.5 */
+  /** Taxa de chegada λ no trecho calmo do Modo Onda de Pico (12:45–13:00). Padrão: 4.13 */
   calmLambda: number;
-  /** Taxa de chegada λ na fase de pico do Modo Onda de Pico (15-40 min). Padrão: 4.9 */
+  /** Taxa de chegada λ no trecho de pico do Modo Onda de Pico (12:00–12:45). Padrão: 5.33 */
   peakLambda: number;
   /** Modo de chegada: constante ou onda de pico */
   arrivalMode: ArrivalMode;
   /** Quais das 5 catracas (C1..C5) estão habilitadas */
   turnstileEnabled: [boolean, boolean, boolean, boolean, boolean];
-  /** Tempo médio de atendimento em cada catraca (segundos). Padrão: 12s */
+  /** Tempo médio de atendimento em cada catraca (segundos). Padrão: 12.64s */
   turnstileServiceTimeSec: number;
-  /** Tempo médio de permanência no buffet (segundos). Padrão: 207s (3.45 min) */
+  /** Tempo médio de permanência no buffet (segundos). Padrão: 263s (4.39 min) */
   buffetServiceTimeSec: number;
-  /** Capacidade máxima de vagas simultâneas no buffet (K). Padrão: 18 */
+  /** Capacidade máxima de vagas simultâneas no buffet (K). Padrão: 30 */
   buffetCapacity: number;
-  /** Quantidade inicial de alunos na fila externa (n0). Padrão: 5 */
+  /** Quantidade inicial de alunos na fila externa (n0) às 12:00:00. Padrão: 10 */
   initialQueue: number;
-  /** Quantidade inicial de alunos já servindo no buffet. Padrão: 0 */
+  /** Quantidade inicial de alunos já servindo no buffet às 12:00:00. Padrão: 0 */
   initialBuffet: number;
   /** Injeção de falha: pausa 1 catraca ativa temporariamente */
   turnstileFault: boolean;
@@ -50,16 +50,16 @@ export interface SimConfig {
 }
 
 export const DEFAULT_CONFIG: SimConfig = {
-  lambda: 4.66,
-  calmLambda: 3.5,
-  peakLambda: 4.9,
+  lambda: 5.03, // 302 chegadas / 60 min (taxa global)
+  calmLambda: 4.13, // Trecho calmo: 12:45–13:00 (62 chegadas / 15 min)
+  peakLambda: 5.33, // Trecho de pico: 12:00–12:45 (240 chegadas / 45 min)
   arrivalMode: "constant",
-  turnstileEnabled: [true, false, false, false, false],
-  turnstileServiceTimeSec: 12,
-  buffetServiceTimeSec: 207,
-  buffetCapacity: 18,
-  initialQueue: 5,
-  initialBuffet: 0,
+  turnstileEnabled: [true, false, false, false, false], // 1 catraca ativa
+  turnstileServiceTimeSec: 12.64, // Tempo médio real na catraca (μ = 4.75 al/min -> ρ = 106%)
+  buffetServiceTimeSec: 263, // 4.39 min médios (Catraca -> Saída do bandejão)
+  buffetCapacity: 30, // Pico real observado = 29 simultâneos (K = 30 -> ρ_buffet = 73.6%)
+  initialQueue: 10, // 10 alunos na fila inicial às 12:00:00
+  initialBuffet: 0, // 0 alunos se servindo às 12:00:00
   turnstileFault: false,
   buffetPaused: false,
   seed: DEFAULT_SEED,
@@ -202,9 +202,9 @@ export function mulberry32(seed: number): () => number {
 
 /**
  * Calcula a taxa de chegada vigente λ (alunos/min) e a fase no tempo t (segundos).
- * No Modo Onda de Pico:
- * - 0 a 15 min e 40 a 60 min: Calma (padrão 3.5 al/min)
- * - 15 a 40 min: Pico (padrão 4.9 al/min)
+ * No Modo Onda de Pico (aferição oficial 12:00–13:00):
+ * - 0 a 45 min (12:00–12:45): Pico (padrão 5.33 al/min)
+ * - 45 a 60 min (12:45–13:00): Calma (padrão 4.13 al/min)
  */
 export function getArrivalRateAtTime(
   config: SimConfig,
@@ -214,7 +214,7 @@ export function getArrivalRateAtTime(
     return { lambda: config.lambda, wavePhase: "constante" };
   }
   const minuteInHour = (timeSec / 60) % 60;
-  if (minuteInHour >= 15 && minuteInHour < 40) {
+  if (minuteInHour < 45) {
     return { lambda: config.peakLambda, wavePhase: "pico" };
   }
   return { lambda: config.calmLambda, wavePhase: "calma" };
@@ -242,9 +242,9 @@ export function formatWaitCompact(waitSec: number): string {
 }
 
 /**
- * Converte tempo simulado em horário de almoço do RU (início às 11h00).
+ * Converte tempo simulado em horário de almoço do RU (aferição 12h00 às 13h00).
  */
-export function formatLunchClock(elapsedSec: number, startHour = 11): string {
+export function formatLunchClock(elapsedSec: number, startHour = 12): string {
   const totalMin = startHour * 60 + Math.floor(elapsedSec / 60);
   const h = Math.floor(totalMin / 60) % 24;
   const m = totalMin % 60;
@@ -349,7 +349,7 @@ export class RUSimulator {
       });
     }
 
-    // Popula fila inicial n0 (Fase 1 + 2)
+    // Popula fila inicial n0 na Fase 1 (os alunos só avançam para as catracas ao iniciar t > 0)
     for (let i = 0; i < this.config.initialQueue; i++) {
       this.externalQueue.push({
         id: this.nextStudentId++,
@@ -359,8 +359,6 @@ export class RUSimulator {
         exitedAt: null,
       });
     }
-
-    this.reconcileTurnstiles();
 
     const n0 = this.getStateN();
     this.maxQueue = this.externalQueue.length;
@@ -652,7 +650,9 @@ export class RUSimulator {
 
   public updateConfig(partial: Partial<SimConfig>): SimSnapshot {
     this.config = this.sanitizeConfig({ ...this.config, ...partial });
-    this.reconcileTurnstiles();
+    if (this.timeSec > 0) {
+      this.reconcileTurnstiles();
+    }
     return this.getSnapshot();
   }
 
@@ -668,7 +668,9 @@ export class RUSimulator {
       });
       this.totalArrivals += 1;
     }
-    this.reconcileTurnstiles();
+    if (this.timeSec > 0) {
+      this.reconcileTurnstiles();
+    }
     if (this.externalQueue.length > this.maxQueue) {
       this.maxQueue = this.externalQueue.length;
       this.maxQueueTimeSec = this.timeSec;

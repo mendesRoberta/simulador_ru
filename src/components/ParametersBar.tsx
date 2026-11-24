@@ -151,7 +151,7 @@ export function ParametersBar({
                     Calma:
                     <input
                       type="number"
-                      step="0.1"
+                      step="0.01"
                       min="0.1"
                       max="60"
                       value={draftValue}
@@ -163,7 +163,7 @@ export function ParametersBar({
                     Pico:
                     <input
                       type="number"
-                      step="0.1"
+                      step="0.01"
                       min="0.1"
                       max="60"
                       value={draftPeakValue}
@@ -175,7 +175,7 @@ export function ParametersBar({
               ) : (
                 <input
                   type="number"
-                  step="0.1"
+                  step="0.01"
                   min="0.1"
                   max="60"
                   value={draftValue}
@@ -233,7 +233,7 @@ export function ParametersBar({
                     ? "border-[#00f0ff] bg-[#ff2a85] text-white shadow-[0_0_10px_rgba(255,42,133,0.6)]"
                     : "border-[rgba(255,42,133,0.6)] bg-[rgba(255,42,133,0.3)] text-[#fbcfe8] hover:bg-[rgba(255,42,133,0.5)]"
                 }`}
-                title="Calma (3.5 al/min) de 0–15 min e 40–60 min; Pico (4.9 al/min) de 15–40 min"
+                title="Pico (5.33 al/min) das 12:00–12:45; Calma (4.13 al/min) das 12:45–13:00"
               >
                 Modo Onda de Pico
               </button>
@@ -339,6 +339,7 @@ export function ParametersBar({
             <div className="flex items-center gap-1.5">
               <input
                 type="number"
+                step="0.01"
                 min="2"
                 max="180"
                 value={draftValue}
