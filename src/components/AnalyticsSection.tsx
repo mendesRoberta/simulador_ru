@@ -405,7 +405,7 @@ export function AnalyticsSection({ snapshot }: AnalyticsSectionProps) {
                 fontSize="11"
                 fontFamily="var(--font-chivo-mono), monospace"
               >
-                Limiar de Fila Longa (L = {LONG_QUEUE_THRESHOLD} discentes)
+                Referência: Sistema com L ≥ {LONG_QUEUE_THRESHOLD} discentes
               </text>
 
               {/* Área sob a curva + Linha de L (stateN) */}
@@ -608,26 +608,27 @@ export function AnalyticsSection({ snapshot }: AnalyticsSectionProps) {
                 </div>
               </div>
 
-              {/* Fila Longa (L >= 10) + Amostragem minuto a minuto em Simular 1h */}
+              {/* Sistema com L >= 10 (amostragem minuto a minuto 12h00–12h59) */}
               <div className="flex flex-col justify-between gap-2 rounded-[4px] border border-[rgba(245,158,11,0.45)] bg-[#1e1442] p-2.5">
                 <div className="flex items-center justify-between gap-1">
                   <span className="font-mono-tech text-[10px] font-semibold text-[#fcd34d]">
-                    Fila Longa
+                    Sistema com L ≥ 10
                   </span>
                   <span className="font-pixel text-[10px] text-[#ffe600]">
-                    {kpis.longQueuePct.toFixed(1)}%
+                    {kpis.longQueueMinutePct.toFixed(1)}%
                   </span>
                 </div>
                 <div className="h-[6px] w-full overflow-hidden rounded-full bg-[#0f172a]">
                   <div
                     className="h-full rounded-full bg-[#fbbf24] transition-all duration-300"
-                    style={{ width: `${Math.min(100, kpis.longQueuePct)}%` }}
+                    style={{
+                      width: `${Math.min(100, kpis.longQueueMinutePct)}%`,
+                    }}
                   />
                 </div>
                 <span className="font-mono-tech text-[9px] leading-[11px] text-[#94a3b8]">
-                  {kpis.minuteSampleCount > 0
-                    ? `Tempo com L ≥ 10 al. (${kpis.longQueueMinuteCount}/${kpis.minuteSampleCount} min)`
-                    : "Tempo com fila ≥ 10 al."}
+                  {kpis.longQueueMinuteCount}/{kpis.minuteSampleCount} min com L
+                  ≥ 10
                 </span>
               </div>
             </div>

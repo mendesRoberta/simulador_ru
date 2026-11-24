@@ -1,7 +1,7 @@
 /**
  * Motor de Simulação da Fila do Restaurante Universitário (UFOPA)
  *
- * Arquitetura pura em TypeScript (sem dependências de UI/React):
+ * Arquitetura pura em TypeScript:
  * - Sistema principal modelado: Fase 1 (Fila Externa: Lq) + Fase 2 (Catracas: c servidores)
  *   - Estado L (stateN) = alunos na fila externa + alunos em atendimento nas catracas
  *   - Sem limite de capacidade K e sem bloqueio pelo buffet
@@ -70,6 +70,8 @@ export interface Student {
   enteredTurnstileAt: number | null;
   enteredBuffetAt: number | null;
   exitedAt: number | null;
+  /** Verdadeiro para os N0 alunos que já estavam no sistema em t=0 (horário real de chegada desconhecido) */
+  isInitial?: boolean;
 }
 
 export interface TurnstileSlot {
@@ -256,6 +258,8 @@ export function formatLunchClock(elapsedSec: number, startHour = 12): string {
 export class RUSimulator {
   private config: SimConfig;
   private rng: () => number;
+  /** PRNG separado para escolher aleatoriamente entre catracas ocupadas (M/M/c, c > 1) */
+  private serviceSlotRng: () => number;
   /** PRNG separado para a animação visual do buffet, garantindo 0 interferência na Cadeia de Markov principal */
   private buffetRng: () => number;
 
@@ -263,6 +267,8 @@ export class RUSimulator {
   private nextStudentId = 1;
   /** Concluíram a catraca (saída do sistema principal) */
   private servedCount = 0;
+  /** Concluíram a catraca com horário de chegada conhecido (exclui os N0 alunos iniciais de t=0) */
+  private timedServedCount = 0;
   private totalArrivals = 0;
 
   private externalQueue: Student[] = [];
@@ -293,6 +299,7 @@ export class RUSimulator {
   constructor(initialConfig?: Partial<SimConfig>) {
     this.config = this.sanitizeConfig({ ...DEFAULT_CONFIG, ...initialConfig });
     this.rng = mulberry32(this.config.seed);
+    this.serviceSlotRng = mulberry32((this.config.seed ^ 0x85ebca6b) >>> 0);
     this.buffetRng = mulberry32((this.config.seed ^ 0x9e3779b9) >>> 0);
     this.initializeState();
   }
@@ -327,10 +334,12 @@ export class RUSimulator {
 
   private initializeState(): void {
     this.rng = mulberry32(this.config.seed);
+    this.serviceSlotRng = mulberry32((this.config.seed ^ 0x85ebca6b) >>> 0);
     this.buffetRng = mulberry32((this.config.seed ^ 0x9e3779b9) >>> 0);
     this.timeSec = 0;
     this.nextStudentId = 1;
     this.servedCount = 0;
+    this.timedServedCount = 0;
     this.totalArrivals = 0;
     this.externalQueue = [];
     this.turnstileOccupants = [null, null, null, null, null];
@@ -353,11 +362,12 @@ export class RUSimulator {
         enteredTurnstileAt: 0,
         enteredBuffetAt: 0,
         exitedAt: null,
+        isInitial: true,
       });
     }
 
     // Popula condição inicial N0 = 10 no sistema principal e aloca imediatamente nas catracas ativas
-    // Em M/M/1 padrão: Lq = 9 na fila externa + 1 em atendimento na C-01 (L = stateN = 10)
+    // Marcados com isInitial: true para não distorcer W/Wq (horário real de chegada antes das 12h é desconhecido)
     for (let i = 0; i < this.config.initialQueue; i++) {
       this.externalQueue.push({
         id: this.nextStudentId++,
@@ -365,6 +375,7 @@ export class RUSimulator {
         enteredTurnstileAt: null,
         enteredBuffetAt: null,
         exitedAt: null,
+        isInitial: true,
       });
     }
 
@@ -375,15 +386,16 @@ export class RUSimulator {
     this.maxNTimeSec = 0;
     this.maxQueue = this.externalQueue.length;
 
-    this.history = [
-      {
-        timeSec: 0,
-        queueLength: this.externalQueue.length,
-        stateN: n0,
-        buffetCount: this.buffetStudents.length,
-      },
-    ];
-    this.minuteSamples = [];
+    const initialPoint: HistoryPoint = {
+      timeSec: 0,
+      queueLength: this.externalQueue.length,
+      stateN: n0,
+      buffetCount: this.buffetStudents.length,
+    };
+
+    this.history = [initialPoint];
+    // Inclui amostra inicial em t = 0 (12h00) para alinhar os 60 registros de campo (12h00..12h59)
+    this.minuteSamples = [initialPoint];
   }
 
   /**
@@ -520,33 +532,40 @@ export class RUSimulator {
       this.totalArrivals += 1;
     } else if (u < markov.probUp + markov.probDown) {
       // Conclusão na catraca (L -> L - 1): término oficial do sistema modelado
-      let oldestSlot = -1;
-      let oldestTime = Infinity;
+      // Em M/M/c (c > 1), tempos exponenciais independentes implicam mesma probabilidade
+      // de conclusão entre todas as catracas ocupadas (escolha aleatória uniforme)
+      const occupiedSlots: number[] = [];
       for (let i = 0; i < MAX_TURNSTILES; i++) {
-        const occupant = this.turnstileOccupants[i];
-        if (occupant !== null) {
-          const tEnter = occupant.enteredTurnstileAt ?? occupant.arrivedAt;
-          if (tEnter < oldestTime) {
-            oldestTime = tEnter;
-            oldestSlot = i;
-          }
+        if (this.turnstileOccupants[i] !== null) {
+          occupiedSlots.push(i);
         }
       }
 
-      if (oldestSlot !== -1) {
-        const student = this.turnstileOccupants[oldestSlot]!;
-        this.turnstileOccupants[oldestSlot] = null;
+      if (occupiedSlots.length > 0) {
+        const chosenSlot =
+          occupiedSlots.length === 1
+            ? occupiedSlots[0]
+            : occupiedSlots[Math.floor(this.serviceSlotRng() * occupiedSlots.length)];
+
+        const student = this.turnstileOccupants[chosenSlot]!;
+        this.turnstileOccupants[chosenSlot] = null;
         student.enteredBuffetAt = nextTime;
 
         // Contabiliza saída do sistema principal (catraca concluída)
         this.servedCount += 1;
-        const tTurnstile = student.enteredTurnstileAt ?? student.arrivedAt;
-        const waitQ = Math.max(0, tTurnstile - student.arrivedAt);
-        const waitC = Math.max(0, nextTime - tTurnstile);
 
-        this.completedQueueSec += waitQ;
-        this.completedTurnstileSec += waitC;
-        this.completedTotalSec += waitQ + waitC;
+        // Só acumula tempos médios (Wq, serviço e W) para discentes que chegaram em t > 0
+        // (exclui os N0 alunos iniciais cujo horário real de chegada antes das 12h é desconhecido)
+        if (!student.isInitial) {
+          this.timedServedCount += 1;
+          const tTurnstile = student.enteredTurnstileAt ?? student.arrivedAt;
+          const waitQ = Math.max(0, tTurnstile - student.arrivedAt);
+          const waitC = Math.max(0, nextTime - tTurnstile);
+
+          this.completedQueueSec += waitQ;
+          this.completedTurnstileSec += waitC;
+          this.completedTotalSec += waitQ + waitC;
+        }
 
         // Envia apenas para a animação visual do buffet (sem limite K)
         this.buffetStudents.push(student);
@@ -591,8 +610,8 @@ export class RUSimulator {
       this.maxQueue = queueLen;
     }
 
-    // Amostragem minuto a minuto (alinhada aos 60 registros da aferição em 1h)
-    if (this.timeSec % 60 === 0) {
+    // Amostragem minuto a minuto de 12h00 até 12h59 (t = 0, 60, ..., 3540 -> 60 registros exatos)
+    if (this.timeSec % 60 === 0 && this.timeSec <= 3540) {
       this.minuteSamples.push({
         timeSec: this.timeSec,
         queueLength: queueLen,
@@ -767,13 +786,13 @@ export class RUSimulator {
     const rhoTurnstiles =
       totalTurnstileRate > 0 ? markov.currentLambda / totalTurnstileRate : Infinity;
 
-    // Tempos médios exclusivamente do sistema principal (quem concluiu a catraca: W = Wq + tempo catraca)
+    // Tempos médios exclusivamente do sistema principal (quem chegou em t > 0 e concluiu a catraca)
     let avgQueueSec: number;
     let avgTurnstileSec: number;
 
-    if (this.servedCount > 0) {
-      avgQueueSec = this.completedQueueSec / this.servedCount;
-      avgTurnstileSec = this.completedTurnstileSec / this.servedCount;
+    if (this.timedServedCount > 0) {
+      avgQueueSec = this.completedQueueSec / this.timedServedCount;
+      avgTurnstileSec = this.completedTurnstileSec / this.timedServedCount;
     } else if (this.timeSec > 0 && this.sumQueue > 0) {
       const lambdaSec = Math.max(1e-6, markov.currentLambda / 60);
       avgQueueSec = this.sumQueue / this.timeSec / lambdaSec;
